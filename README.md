@@ -1,5 +1,7 @@
 # dsh-float-lamp
 
+[![test](https://github.com/shZhang1614/dsh-float-lamp/actions/workflows/test.yml/badge.svg)](https://github.com/shZhang1614/dsh-float-lamp/actions/workflows/test.yml)
+
 悬浮任务状态灯：独立于 DeepSeek Harness 窗口的置顶小灯，实时显示任务状态；鼠标悬停显示正在运行的任务信息。
 
 A floating, always-on-top status lamp that lives **outside** the DeepSeek Harness window: 🟢 running, 🟠 needs approval, 🔵 needs your input, ⚪ idle, dark-grey host offline. Hover the lamp to list running tasks. Windows only (PowerShell WinForms).
@@ -14,7 +16,7 @@ A floating, always-on-top status lamp that lives **outside** the DeepSeek Harnes
 | ⚪ 灰 | 空闲 | 无活动轮次 |
 | ⚫ 暗灰「宿主离线」 | DSH 未运行 | state.json 超过 15 秒未更新，或标记 hostDown |
 
-- 多会话聚合优先级：橙 > 蓝 > 绿 > 灰；灯上显示当前状态与计数。
+- 多会话聚合优先级：橙 > 蓝 > 绿 > 灰；灯上显示当前状态与计数，绿灯时附带本回合**已运行时长**（分/秒）。
 - **极简发光 + 动画**：无卡片背景（`UpdateLayeredWindow` 逐像素 alpha，边缘抗锯齿无暗边），只有发光圆灯（三层光晕+高光）
   和带暗色描边的文字，任何桌面背景下都可读——
   🟢 灯体静止，周围光晕呼吸（忽亮忽暗、轻微涨缩）；
@@ -22,6 +24,9 @@ A floating, always-on-top status lamp that lives **outside** the DeepSeek Harnes
   动画 20fps，仅绿/橙/蓝状态运行（不闪不晃，不打扰）。
 - **悬停卡片**：鼠标移到灯上约 0.3 秒，灯左侧弹出深色卡片，逐行列出每个会话：
   `[状态] 最近一条用户消息（正在: 工具名）`；移开自动消失，拖动灯时隐藏。
+- **交互**：左键拖动记忆位置；**轻点灯（未拖动）跳回 DSH 宿主窗口**（最小化会自动还原）；
+  右键菜单：置顶开关 / 动画开关 / 透明度（100/75/50/25%）/ 大小（小/标准/大）/ 退出，
+  设置记忆在 `settings.json`。高 DPI 自动适配（PerMonitorV2，几何与字体按缩放系数放大）。
 - 离线超过 60 秒灯自动退出（宿主重启后会重新拉起）。
 
 ## 原理
@@ -39,11 +44,11 @@ A floating, always-on-top status lamp that lives **outside** the DeepSeek Harnes
     重新开启则重新拉起灯。
   - `apply()` 返回清理函数（cordis fiber disposable）。⚠️ 不要在 apply 里访问
     `ctx.dispose`——Context 没有该成员，代理会抛错并使 fiber 进入错误态（所有监听被摘除）。
-- `widget/lamp.ps1`（独立灯窗）：PowerShell WinForms，置顶无边框（184×96），
-  `BackColor = TransparencyKey = 纯黑` 抠除背景，只画发光灯与描边文字；
+- `widget/lamp.ps1`（独立灯窗）：PowerShell WinForms，置顶无边框（184×96 × DPI/大小系数），
+  `UpdateLayeredWindow` 逐像素 alpha 全透明渲染（抗锯齿边缘、可调整体透明度）；
   400ms 轮询 state.json；`animTimer` 50ms/帧仅在
-  running/approval/question 时驱动（相位角驱动挤压拉伸、抖动、漂浮）。
-  左键拖动（位置记忆到 `pos.json`），右键菜单：置顶开关 / 退出。
+  running/approval/question 且动画开启时驱动（相位角驱动光晕呼吸、抖动、漂浮）。
+  左键拖动（位置记忆到 `pos.json`）/ 轻点跳宿主窗口，右键菜单：置顶 / 动画 / 透明度 / 大小 / 退出。
   互斥锁 + `lamp.pid` 保证单实例（环境变量 `DSH_LAMP_TAG` 可换锁名，供测试实例并存）。
 
 ## 安装 / Install
@@ -94,8 +99,9 @@ dsh plugin --profile desktop add github:shZhang1614/dsh-float-lamp
 
 | 文件 | 作用 |
 |------|------|
-| `state.json` | 聚合状态（state、counts、tasks、updatedAt、pid、hostDown） |
+| `state.json` | 聚合状态（state、counts、runningSince、tasks、updatedAt、pid、hostDown） |
 | `pos.json` | 灯窗位置记忆 |
+| `settings.json` | 灯窗偏好（opacity、scale、animation） |
 | `lamp.pid` | 灯进程 pid（单实例检查） |
 | `debug.log` | 插件诊断日志（加载、订阅、轮询错误、spawn） |
 
@@ -116,5 +122,6 @@ dsh plugin --profile desktop add github:shZhang1614/dsh-float-lamp
 
 ## 测试
 
-- `node test/fold-test.mjs` — 状态机 17 项断言（四态、优先级、多会话、重放播种、harness 噪音过滤）。
+- `node test/fold-test.mjs` — 状态机 19 项断言（四态、优先级、多会话、重放播种、harness 噪音过滤、运行时长）。
+  GitHub Actions 每次 push 自动运行。
 - 假 ctx 冒烟：apply 返回清理函数、poll 折叠事件、cleanup 写 hostDown。

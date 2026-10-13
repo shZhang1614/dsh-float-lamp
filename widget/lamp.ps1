@@ -8,8 +8,9 @@
 # 动画 50ms/帧（20fps），仅在 running/approval/question 时运行，静止状态不耗 CPU。
 # 背景用分层窗口（UpdateLayeredWindow）每像素 alpha 抠除：只有灯、光晕和带描边的文字可见，
 # 无卡片方框；抗锯齿边缘与桌面平滑混合，无黑边、无锯齿。
-# 左键拖动移动（位置记忆），右键菜单：置顶开关 / 退出。单实例（互斥锁）。
+# 左键拖动移动（位置记忆）；左键轻点（未拖动）= 跳回 DeepSeek Harness 窗口；右键菜单：置顶开关 / 透明度 / 大小 / 动画开关 / 退出（settings.json 记忆）。单实例（互斥锁）。
 # 鼠标悬停：显示当前任务信息（每会话一行：状态 + 最近用户消息 + 正在执行的工具）。
+# 高 DPI：PerMonitorV2 感知，几何与字体按系统缩放系数放大。绿灯时显示本回合已运行时长。
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
@@ -41,6 +42,25 @@ public static extern bool DeleteDC(System.IntPtr hdc);
 public static extern System.IntPtr SelectObject(System.IntPtr hdc, System.IntPtr h);
 [System.Runtime.InteropServices.DllImport("gdi32.dll")]
 public static extern bool DeleteObject(System.IntPtr h);
+public delegate bool EnumWindowsProc(System.IntPtr hWnd, System.IntPtr lParam);
+[DllImport("user32.dll")]
+public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, System.IntPtr lParam);
+[DllImport("user32.dll")]
+public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint lpdwProcessId);
+[DllImport("user32.dll")]
+public static extern bool IsWindowVisible(System.IntPtr hWnd);
+[DllImport("user32.dll")]
+public static extern bool IsIconic(System.IntPtr hWnd);
+[DllImport("user32.dll")]
+public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+[DllImport("user32.dll")]
+public static extern bool SetForegroundWindow(System.IntPtr hWnd);
+[DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int GetWindowTextLengthW(System.IntPtr hWnd);
+[DllImport("user32.dll", SetLastError = true)]
+public static extern bool SetProcessDpiAwarenessContext(System.IntPtr value);
+[DllImport("user32.dll")]
+public static extern uint GetDpiForSystem();
 '@
 
 # 通用：把 32bpp 预乘 alpha 位图推给分层窗口
@@ -55,7 +75,7 @@ function Push-Layered {
   $pptSrc = New-Object Win32.LW+POINT
   $psize = New-Object Win32.LW+SIZE; $psize.cx = $w; $psize.cy = $h
   $blend = New-Object Win32.LW+BLENDFUNCTION
-  $blend.BlendOp = 0; $blend.BlendFlags = 0; $blend.SourceConstantAlpha = 255; $blend.AlphaFormat = 1
+  $blend.BlendOp = 0; $blend.BlendFlags = 0; $blend.SourceConstantAlpha = [byte]$script:opacityAlpha; $blend.AlphaFormat = 1
   $ok = [Win32.LW]::UpdateLayeredWindow($win.Handle, $hdcDst, [ref]$ppt, [ref]$psize, $hdcSrc, [ref]$pptSrc, 0, [ref]$blend, 2)
   [void][Win32.LW]::SelectObject($hdcSrc, $old)
   [void][Win32.LW]::DeleteObject($hBmp)
@@ -76,6 +96,76 @@ $dir = if ($env:DSH_LAMP_DIR) { $env:DSH_LAMP_DIR } else { Join-Path $env:USERPR
 $stateFile = Join-Path $dir 'state.json'
 $posFile = Join-Path $dir 'pos.json'
 try { "$PID" | Set-Content (Join-Path $dir 'lamp.pid') -Encoding ASCII } catch { }
+
+# ---- 用户设置（右键菜单记忆）：透明度 / 大小 / 动画 ----
+$settingsFile = Join-Path $dir 'settings.json'
+$script:opacity = 100
+$script:userScale = 1.0
+$script:animOn = $true
+if (Test-Path $settingsFile) {
+  try {
+    $cfg = Get-Content $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $o = 0
+    if ([int]::TryParse([string]$cfg.opacity, [ref]$o) -and $o -ge 20 -and $o -le 100) { $script:opacity = $o }
+    $us = 1.0
+    if ([double]::TryParse([string]$cfg.scale, [ref]$us) -and $us -ge 0.6 -and $us -le 1.6) { $script:userScale = $us }
+    if ($cfg.animation -eq $false) { $script:animOn = $false }
+  } catch { }
+}
+function Save-Settings {
+  try {
+    "{`"opacity`":$($script:opacity),`"scale`":$($script:userScale),`"animation`":$($script:animOn.ToString().ToLower())}" | Set-Content $settingsFile -Encoding UTF8
+  } catch { }
+}
+
+# ---- 高 DPI：PerMonitorV2（Win10 1703+），几何/字体按系统缩放系数放大 ----
+$script:dpiScale = 1.0
+try {
+  $ctx = if ([Environment]::OSVersion.Version.Build -ge 15063) { [IntPtr](-4) } else { [IntPtr](-3) }
+  [void][Win32.LW]::SetProcessDpiAwarenessContext($ctx)
+} catch { }
+try { $dpi = [Win32.LW]::GetDpiForSystem(); if ($dpi -ge 96) { $script:dpiScale = $dpi / 96.0 } } catch { }
+function Get-GeomScale { $script:dpiScale * $script:userScale }
+$script:opacityAlpha = [int](255 * $script:opacity / 100)
+
+# ---- 运行时长格式化（绿灯 detail 显示） ----
+function Format-Elapsed([double]$ms) {
+  if ($ms -lt 0) { $ms = 0 }
+  $sec = [int][Math]::Floor($ms / 1000)
+  if ($sec -lt 60) { return "$sec 秒" }
+  $m = [int][Math]::Floor($sec / 60)
+  if ($m -lt 60) { return "$m 分 $($sec % 60) 秒" }
+  return "$([int][Math]::Floor($m / 60)) 时 $($m % 60) 分"
+}
+
+# ---- 单击跳回宿主窗口 ----
+$script:hostPid = 0
+function Find-HostWindow([int]$targetPid) {
+  $script:foundHwnd = [IntPtr]::Zero
+  $cb = {
+    param($h, $l)
+    if ([Win32.LW]::IsWindowVisible($h)) {
+      $pid2 = [uint32]0
+      [void][Win32.LW]::GetWindowThreadProcessId($h, [ref]$pid2)
+      if ($pid2 -eq $targetPid -and [Win32.LW]::GetWindowTextLengthW($h) -gt 0) {
+        $script:foundHwnd = $h
+        return $false
+      }
+    }
+    return $true
+  }
+  [void][Win32.LW]::EnumWindows($cb, [IntPtr]::Zero)
+  return $script:foundHwnd
+}
+function Jump-ToHost {
+  if ($script:hostPid -le 0) { return }
+  try {
+    $hwnd = Find-HostWindow ([int]$script:hostPid)
+    if ($hwnd -eq [IntPtr]::Zero) { return }
+    if ([Win32.LW]::IsIconic($hwnd)) { [void][Win32.LW]::ShowWindow($hwnd, 9) }  # SW_RESTORE
+    [void][Win32.LW]::SetForegroundWindow($hwnd)
+  } catch { }
+}
 
 # ---- 状态定义 ----
 $colors = @{
@@ -102,7 +192,8 @@ $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
 $form.BackColor = $KEY
 $form.ShowInTaskbar = $false
 $form.TopMost = $true
-$form.Size = New-Object System.Drawing.Size(184, 96)
+$g0 = Get-GeomScale
+$form.Size = New-Object System.Drawing.Size([int](184 * $g0), [int](96 * $g0))
 $form.Cursor = [System.Windows.Forms.Cursors]::Hand
 
 # 初始位置：主屏工作区右上角（或恢复记忆位置）
@@ -123,11 +214,44 @@ $form.Location = New-Object System.Drawing.Point($px, $py)
 # ---- 右键菜单 ----
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $miTop = $menu.Items.Add('取消置顶')
+$miAnim = $menu.Items.Add('关闭动画')
+$miOpacity = $menu.Items.Add('透明度')
+foreach ($ov in 100, 75, 50, 25) {
+  $oi = $miOpacity.DropDownItems.Add("$ov%")
+  $oi.Tag = $ov
+  $oi.Add_Click({
+    $script:opacity = [int]$this.Tag
+    $script:opacityAlpha = [int](255 * $script:opacity / 100)
+    Save-Settings
+    Render-Lamp
+    if (-not $script:layered) { $form.Invalidate() }
+  })
+}
+$miSize = $menu.Items.Add('大小')
+foreach ($pair in @(@(0.8, '小'), @(1.0, '标准'), @(1.25, '大'))) {
+  $si = $miSize.DropDownItems.Add([string]$pair[1])
+  $si.Tag = $pair[0]
+  $si.Add_Click({
+    $script:userScale = [double]$this.Tag
+    Save-Settings
+    Apply-Geometry
+  })
+}
 $miExit = $menu.Items.Add('退出')
 $miTop.Add_Click({
   $script:topMost = -not $script:topMost
   $form.TopMost = $script:topMost
   if ($script:topMost) { $miTop.Text = '取消置顶' } else { $miTop.Text = '恢复置顶' }
+})
+$miAnim.Add_Click({
+  $script:animOn = -not $script:animOn
+  if ($script:animOn) { $miAnim.Text = '关闭动画' }
+  else {
+    $miAnim.Text = '开启动画'
+    if ($animTimer.Enabled) { $animTimer.Stop() }
+    $script:lastRender = ''   # 强制静止重绘一帧
+  }
+  Save-Settings
 })
 $miExit.Add_Click({ $form.Close() })
 
@@ -138,7 +262,7 @@ public class LampTipForm : Form {
   protected override bool ShowWithoutActivation { get { return true; } }
 }
 '@ -ReferencedAssemblies System.Windows.Forms
-$fontTip = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+$script:fontTip = New-Object System.Drawing.Font('Microsoft YaHei UI', [single](9 * (Get-GeomScale)))
 $tipForm = New-Object LampTipForm
 $tipForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
 $tipForm.BackColor = [System.Drawing.Color]::FromArgb(22, 26, 35)
@@ -150,7 +274,7 @@ $tipLabel = New-Object System.Windows.Forms.Label
 $tipLabel.AutoSize = $false
 $tipLabel.BackColor = [System.Drawing.Color]::Transparent
 $tipLabel.ForeColor = [System.Drawing.Color]::FromArgb(230, 234, 242)
-$tipLabel.Font = $fontTip
+$tipLabel.Font = $script:fontTip
 $tipLabel.UseMnemonic = $false
 $tipForm.Controls.Add($tipLabel)
 $tipForm.Add_Paint({
@@ -195,8 +319,8 @@ function Render-Tip {
     $yOff = 10
     foreach ($ln in ($script:tipText -split "`n")) {
       $rect = New-Object System.Drawing.RectangleF(12, $yOff, ($w - 24), 2000)
-      $g.DrawString($ln, $fontTip, $tb, $rect)
-      $szl = [System.Windows.Forms.TextRenderer]::MeasureText($ln, $fontTip,
+      $g.DrawString($ln, $script:fontTip, $tb, $rect)
+      $szl = [System.Windows.Forms.TextRenderer]::MeasureText($ln, $script:fontTip,
         (New-Object System.Drawing.Size(($w - 24), 2000)), [System.Windows.Forms.TextFormatFlags]::WordBreak)
       $yOff += $szl.Height
     }
@@ -223,7 +347,7 @@ function Update-LampTip {
   # 逐行测量再求和：TextRenderer 对多行串会少算最后一行高度，导致末行被裁掉
   $tw = 0; $th = 0
   foreach ($ln in ($script:tipText -split "`n")) {
-    $szl = [System.Windows.Forms.TextRenderer]::MeasureText($ln, $fontTip,
+    $szl = [System.Windows.Forms.TextRenderer]::MeasureText($ln, $script:fontTip,
       (New-Object System.Drawing.Size(340, 2000)), [System.Windows.Forms.TextFormatFlags]::WordBreak)
     if ($szl.Width -gt $tw) { $tw = $szl.Width }
     $th += $szl.Height
@@ -276,6 +400,7 @@ $form.Add_MouseDown({
     $tipTimer.Stop()
     if ($tipForm.Visible) { $tipForm.Hide() }
     $mp = [System.Windows.Forms.Cursor]::Position
+    $script:downX = $mp.X; $script:downY = $mp.Y
     $script:dragOff = New-Object System.Drawing.Point(($mp.X - $form.Left), ($mp.Y - $form.Top))
   } elseif ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right) {
     $menu.Show($form, [int]$e.X, [int]$e.Y)
@@ -290,6 +415,9 @@ $form.Add_MouseMove({
 $form.Add_MouseUp({
   if ($script:dragging) {
     $script:dragging = $false
+    $mp = [System.Windows.Forms.Cursor]::Position
+    $moved = [Math]::Abs($mp.X - $script:downX) + [Math]::Abs($mp.Y - $script:downY)
+    if ($moved -lt 6) { Jump-ToHost; return }   # 轻点（非拖动）：跳回宿主窗口
     try {
       "{`"x`":$($form.Left),`"y`":$($form.Top)}" | Set-Content $posFile -Encoding UTF8
     } catch { }
@@ -329,11 +457,20 @@ $timer.Add_Tick({
       $offline = $true
     } else {
       $script:state = [string]$s.state
+      $hp = 0
+      if ([int]::TryParse([string]$s.pid, [ref]$hp)) { $script:hostPid = $hp }
       $c = $s.counts
       $parts = @()
       if ($c.running -gt 0) { $parts += "运行 $($c.running)" }
       if ($c.approval -gt 0) { $parts += "授权 $($c.approval)" }
       if ($c.question -gt 0) { $parts += "交互 $($c.question)" }
+      # 绿灯时显示本回合已运行时长（runningSince = 最早开放 turn 的 epoch ms）
+      $rs = 0.0
+      if (-not [double]::TryParse([string]$s.runningSince, [ref]$rs)) { $rs = 0 }
+      if ($script:state -eq 'running' -and $rs -gt 0) {
+        $el = Format-Elapsed ($nowMs - $rs)
+        if ($script:state -eq 'running') { $parts += "已运行 $el" }
+      }
       $script:detail = ($parts -join ' · ')
       # 悬停内容：每个会话一行任务信息
       $lines = @()
@@ -363,13 +500,13 @@ $timer.Add_Tick({
   } else {
     $script:offlineSince = $null
   }
-  # 动画开关：只有 running/approval/question 需要逐帧动画
-  if ($script:state -in @('running', 'approval', 'question')) {
+  # 动画开关：只有 running/approval/question 需要逐帧动画（右键菜单可全局关闭）
+  if ($script:animOn -and $script:state -in @('running', 'approval', 'question')) {
     if (-not $animTimer.Enabled) { $animTimer.Start() }
   } else {
     if ($animTimer.Enabled) { $animTimer.Stop() }
     # 静止状态：只在显示内容变化时重绘（避免每 tick 重绘导致闪烁）
-    $key = "$($script:state)|$($script:detail)"
+    $key = "$($script:state)|$($script:detail)|$($script:animOn)"
     if ($key -ne $script:lastRender) {
       $script:lastRender = $key
       Render-Lamp
@@ -389,10 +526,24 @@ $animTimer.Add_Tick({
 })
 
 # ---- 绘制 ----
-$fontTitle = New-Object System.Drawing.Font('Microsoft YaHei UI', 10, [System.Drawing.FontStyle]::Bold)
-$fontSmall = New-Object System.Drawing.Font('Microsoft YaHei UI', 8)
+$script:fontTitle = New-Object System.Drawing.Font('Microsoft YaHei UI', [single](10 * (Get-GeomScale)), [System.Drawing.FontStyle]::Bold)
+$script:fontSmall = New-Object System.Drawing.Font('Microsoft YaHei UI', [single](8 * (Get-GeomScale)))
 $grayText = [System.Drawing.Color]::FromArgb(190, 197, 205)
 $outlineColor = [System.Drawing.Color]::FromArgb(12, 15, 20)
+
+# 大小切换：重建窗体尺寸与字体（DPI 系数 × 用户系数）
+function Apply-Geometry {
+  $g = Get-GeomScale
+  $oldFonts = @($script:fontTitle, $script:fontSmall, $script:fontTip)
+  $script:fontTitle = New-Object System.Drawing.Font('Microsoft YaHei UI', [single](10 * $g), [System.Drawing.FontStyle]::Bold)
+  $script:fontSmall = New-Object System.Drawing.Font('Microsoft YaHei UI', [single](8 * $g))
+  $script:fontTip = New-Object System.Drawing.Font('Microsoft YaHei UI', [single](9 * $g))
+  foreach ($of in $oldFonts) { try { $of.Dispose() } catch { } }
+  $form.Size = New-Object System.Drawing.Size([int](184 * $g), [int](96 * $g))
+  Render-Lamp
+  if (-not $script:layered) { $form.Invalidate() }
+  if ($tipForm.Visible) { Update-LampTip }
+}
 
 # 带暗色描边的文字：任何桌面背景下都可读（背景已完全透明）
 function Draw-OutlinedText {
@@ -432,19 +583,20 @@ function Draw-LampContent {
       # 光晕呼吸：忽亮忽暗（alpha 涨落）+ 光圈轻微涨缩，灯体保持静止
       $gp = 0.5 + 0.5 * [Math]::Sin($p * 0.9)
       $glowF = 0.30 + 1.05 * $gp
-      $glowR = 3.0 * $gp
+      $glowR = 3.0 * $gp * (Get-GeomScale)
     }
     'approval' {
       # 紧张抖动：左右小幅晃动，灯体不伸缩
-      $bobX = 2.4 * [Math]::Sin($p * 1.7)
+      $bobX = 2.4 * (Get-GeomScale) * [Math]::Sin($p * 1.7)
     }
     'question' {
       # 上下漂浮
-      $bobY = -2.4 * (0.5 + 0.5 * [Math]::Sin($p * 0.9))
+      $bobY = -2.4 * (Get-GeomScale) * (0.5 + 0.5 * [Math]::Sin($p * 0.9))
     }
   }
 
-  $cx = 46; $cy = 48; $cr = 19
+  $gs = Get-GeomScale   # 几何缩放（DPI × 用户大小）；$g 是 Graphics 参数勿撞名
+  $cx = 46 * $gs; $cy = 48 * $gs; $cr = 19 * $gs
   $rx = $cr * $sx; $ry = $cr * $sy
   # 底部锚定：伸缩时灯的底边不动，顶部伸缩
   $cyc = $cy + ($cr - $ry) + $bobY
@@ -453,7 +605,7 @@ function Draw-LampContent {
   # 光晕：10 层平滑衰减（alpha 按二次方从内到外递减），running 时随呼吸忽亮忽暗
   for ($i = 10; $i -ge 1; $i--) {
     $t = $i / 10.0
-    $grx = $rx + 18 * $t + $glowR; $gry = $ry + 18 * $t + $glowR
+    $grx = $rx + 18 * $t * $gs + $glowR; $gry = $ry + 18 * $t * $gs + $glowR
     $ga = [int](54 * (1 - $t) * (1 - $t) * ($alpha / 255.0) * $glowF)
     if ($ga -le 0) { continue }
     if ($ga -gt 255) { $ga = 255 }
@@ -471,9 +623,10 @@ function Draw-LampContent {
   $b.Dispose()
 
   # 文字（带描边，无卡片背景）
-  Draw-OutlinedText $g $labels[$st] $fontTitle ([single]80) ([single]22) ([System.Drawing.Color]::White)
+  $tx = [single](80 * $gs)
+  Draw-OutlinedText $g $labels[$st] $script:fontTitle $tx ([single](22 * $gs)) ([System.Drawing.Color]::White)
   if ($script:detail -ne '') {
-    Draw-OutlinedText $g $script:detail $fontSmall ([single]80) ([single]50) $grayText
+    Draw-OutlinedText $g $script:detail $script:fontSmall $tx ([single](50 * $gs)) $grayText
   }
 }
 

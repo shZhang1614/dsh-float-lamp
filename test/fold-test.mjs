@@ -81,4 +81,10 @@ applyEvent('s5', { type: 'turn/end', data: {} })
 applyEvent('s1', { type: 'turn/end', data: {} })
 check('all idle', aggregate().state, 'idle')
 
+// 15. runningSince：运行中 >0（epoch ms），空闲归 0
+applyEvent('s6', { type: 'turn/start', data: { turn: 1 } })
+check('runningSince set', aggregate().runningSince > 0, true)
+applyEvent('s6', { type: 'turn/end', data: { turn: 1 } })
+check('runningSince cleared', aggregate().runningSince, 0)
+
 process.exit(failed ? 1 : 0)
