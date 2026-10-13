@@ -1,7 +1,11 @@
-﻿# dsh-float-lamp widget — 独立置顶悬浮状态灯。
-# 轮询 ~/.dsh/float-lamp/state.json，渲染四色灯（静态色，无闪烁动画）：
-#   绿 running / 橙 approval / 蓝 question / 灰 idle；宿主失联显示暗灰“宿主离线”，
-#   离线持续 60 秒自动退出。
+﻿# dsh-float-lamp widget — 独立置顶悬浮表情状态灯。
+# 轮询 ~/.dsh/float-lamp/state.json，渲染带表情的圆形灯：
+#   绿 running：笑脸 + 上下弹性伸缩（squash & stretch，底部锚定）+ 眼球左右扫视 + 眨眼
+#   橙 approval：担忧脸（八字眉+波浪嘴+汗滴）+ 左右紧张抖动
+#   蓝 question：好奇脸（单侧挑眉+歪嘴+头顶 ? 气泡）+ 上下漂浮
+#   灰 idle：困倦脸（闭眼弧线+小 o 嘴+Zzz），静止
+#   暗灰 offline：X 眼 + 平嘴，静止；离线持续 60 秒自动退出
+# 动画 50ms/帧（20fps），仅在 running/approval/question 时运行，静止状态不耗 CPU。
 # 左键拖动移动（位置记忆），右键菜单：置顶开关 / 退出。单实例（互斥锁）。
 # 鼠标悬停：显示当前任务信息（每会话一行：状态 + 最近用户消息 + 正在执行的工具）。
 
@@ -9,8 +13,13 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-$mutex = New-Object System.Threading.Mutex($false, 'dsh-float-lamp-widget')
-if (-not $mutex.WaitOne(0)) { exit 0 }
+$mutexName = 'dsh-float-lamp-widget'
+if ($env:DSH_LAMP_TAG) { $mutexName += "-$env:DSH_LAMP_TAG" }   # 测试实例用不同锁名，可与正式灯并存
+$mutex = New-Object System.Threading.Mutex($false, $mutexName)
+$acquired = $false
+try { $acquired = $mutex.WaitOne(0) }
+catch [System.Threading.AbandonedMutexException] { $acquired = $true }  # 上一个实例被强杀，锁已归我
+if (-not $acquired) { exit 0 }
 
 $dir = if ($env:DSH_LAMP_DIR) { $env:DSH_LAMP_DIR } else { Join-Path $env:USERPROFILE '.dsh\float-lamp' }
 $stateFile = Join-Path $dir 'state.json'
@@ -32,6 +41,9 @@ $labels = @{
 $script:state = 'idle'
 $script:detail = ''
 $script:topMost = $true
+$script:phase = 0.0
+$script:blinkNext = 0
+$script:blinkUntil = 0
 
 # ---- 窗体 ----
 $form = New-Object System.Windows.Forms.Form
@@ -185,7 +197,7 @@ $form.Add_MouseUp({
 $form.Add_MouseEnter({ if (-not $script:dragging) { $tipTimer.Start() } })
 $form.Add_MouseLeave({ $tipTimer.Stop(); if ($tipForm.Visible) { $tipForm.Hide() } })
 
-# ---- 轮询 ----
+# ---- 状态轮询 ----
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 400
 $script:lastRender = ''
@@ -247,19 +259,41 @@ $timer.Add_Tick({
   } else {
     $script:offlineSince = $null
   }
-  # 只在显示内容变化时重绘（避免每 tick 重绘导致的闪烁）
-  $key = "$($script:state)|$($script:detail)"
-  if ($key -ne $script:lastRender) {
-    $script:lastRender = $key
-    $form.Invalidate()
+  # 动画开关：只有 running/approval/question 需要逐帧动画
+  if ($script:state -in @('running', 'approval', 'question')) {
+    if (-not $animTimer.Enabled) { $animTimer.Start() }
+  } else {
+    if ($animTimer.Enabled) { $animTimer.Stop() }
+    # 静止状态：只在显示内容变化时重绘（避免每 tick 重绘导致闪烁）
+    $key = "$($script:state)|$($script:detail)"
+    if ($key -ne $script:lastRender) {
+      $script:lastRender = $key
+      $form.Invalidate()
+    }
   }
 })
 $timer.Start()
 
+# ---- 动画时钟（20fps，仅动画状态运行） ----
+$animTimer = New-Object System.Windows.Forms.Timer
+$animTimer.Interval = 50
+$animTimer.Add_Tick({
+  $script:phase += 0.28
+  $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  if ($now -gt $script:blinkNext) {
+    $script:blinkUntil = $now + 130
+    $script:blinkNext = $now + 2400 + (Get-Random -Maximum 2600)
+  }
+  $form.Invalidate()
+})
+
 # ---- 绘制 ----
 $fontTitle = New-Object System.Drawing.Font('Microsoft YaHei UI', 10, [System.Drawing.FontStyle]::Bold)
 $fontSmall = New-Object System.Drawing.Font('Microsoft YaHei UI', 8)
+$fontBubble = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+$fontZzz = New-Object System.Drawing.Font('Segoe UI', 8, [System.Drawing.FontStyle]::Italic)
 $grayText = [System.Drawing.Color]::FromArgb(156, 163, 175)
+$faceDark = [System.Drawing.Color]::FromArgb(23, 28, 38)
 
 $form.Add_Paint({
   $g = $args[1].Graphics
@@ -270,31 +304,163 @@ $form.Add_Paint({
   $g.DrawPath($pen, $script:path)
   $pen.Dispose()
 
-  $base = $colors[$script:state]
+  $st = $script:state
+  $base = $colors[$st]
   $alpha = 255
-  if ($script:state -eq 'idle') { $alpha = 175 }
-  if ($script:state -eq 'offline') { $alpha = 120 }
+  if ($st -eq 'idle') { $alpha = 175 }
+  if ($st -eq 'offline') { $alpha = 120 }
+
+  # ---- 动画参数（按状态） ----
+  $p = $script:phase
+  $sx = 1.0; $sy = 1.0; $bobX = 0.0; $bobY = 0.0
+  switch ($st) {
+    'running' {
+      # 上下弹性伸缩：竖向拉伸 + 横向挤压（保体积），底部锚定像弹跳的小球
+      $s = [Math]::Sin($p)
+      $sy = 1 + 0.16 * $s
+      $sx = 1.0 / $sy
+      $bobY = -2.5 * [Math]::Max(0, $s)
+    }
+    'approval' {
+      # 紧张抖动：左右小幅晃动 + 轻微压扁
+      $s = [Math]::Sin($p * 1.7)
+      $sy = 1 + 0.07 * $s
+      $sx = 1.0 / $sy
+      $bobX = 2.4 * $s
+    }
+    'question' {
+      # 上下漂浮
+      $bobY = -2.4 * (0.5 + 0.5 * [Math]::Sin($p * 0.9))
+    }
+  }
 
   $cx = 46; $cy = 48; $cr = 19
-  # 光晕
+  $rx = $cr * $sx; $ry = $cr * $sy
+  # 底部锚定：伸缩时灯的底边不动，顶部伸缩
+  $cyc = $cy + ($cr - $ry) + $bobY
+  $cx2 = $cx + $bobX
+
+  # 光晕（随灯同步伸缩）
   for ($i = 3; $i -ge 1; $i--) {
-    $gr = $cr + 6 * $i
+    $grx = $rx + 6 * $i; $gry = $ry + 6 * $i
     $ga = [int](14 * $i * ($alpha / 255.0))
     $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb($ga, $base.R, $base.G, $base.B))
-    $g.FillEllipse($b, ($cx - $gr), ($cy - $gr), ($gr * 2), ($gr * 2))
+    $g.FillEllipse($b, ($cx2 - $grx), ($cyc - $gry), ($grx * 2), ($gry * 2))
     $b.Dispose()
   }
-  # 灯芯
+  # 灯芯（表情脸底色）
   $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb($alpha, $base.R, $base.G, $base.B))
-  $g.FillEllipse($b, ($cx - $cr), ($cy - $cr), ($cr * 2), ($cr * 2))
+  $g.FillEllipse($b, ($cx2 - $rx), ($cyc - $ry), ($rx * 2), ($ry * 2))
   $b.Dispose()
   # 高光
   $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb([int](70 * ($alpha / 255.0)), 255, 255, 255))
-  $g.FillEllipse($b, ($cx - 9), ($cy - 12), 12, 9)
+  $g.FillEllipse($b, ($cx2 - 0.48 * $rx), ($cyc - 0.66 * $ry), (0.62 * $rx), (0.46 * $ry))
   $b.Dispose()
 
+  # ---- 表情 ----
+  $penFace = New-Object System.Drawing.Pen($faceDark, 2)
+  $penFace.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+  $penFace.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+  $eyeDX = 0.42 * $rx
+  $eyeY = $cyc - 0.30 * $ry
+  $ew = 0.34 * $rx; $eh = 0.40 * $ry
+  $blinking = ($st -in @('running', 'approval', 'question')) -and
+              ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $script:blinkUntil)
+
+  if ($st -eq 'offline') {
+    # X X 眼
+    foreach ($side in -1, 1) {
+      $ex = $cx2 + $side * $eyeDX
+      $g.DrawLine($penFace, ($ex - 3.5), ($eyeY - 3.5), ($ex + 3.5), ($eyeY + 3.5))
+      $g.DrawLine($penFace, ($ex - 3.5), ($eyeY + 3.5), ($ex + 3.5), ($eyeY - 3.5))
+    }
+    # 平嘴
+    $g.DrawLine($penFace, ($cx2 - 6), ($cyc + 0.42 * $ry), ($cx2 + 6), ($cyc + 0.42 * $ry))
+  } elseif ($st -eq 'idle') {
+    # 闭眼（下弯弧线）+ 小 o 嘴 + Zzz
+    foreach ($side in -1, 1) {
+      $ex = $cx2 + $side * $eyeDX
+      $g.DrawArc($penFace, ($ex - $ew / 2), ($eyeY - $eh / 2), $ew, $eh, 200, 140)
+    }
+    $b = New-Object System.Drawing.SolidBrush($faceDark)
+    $g.FillEllipse($b, ($cx2 - 2.5), ($cyc + 0.34 * $ry), 5, 5)
+    $b.Dispose()
+    $bTxt = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(150, 200, 210, 225))
+    $g.DrawString('z', $fontZzz, $bTxt, [single]($cx2 + $rx + 1), [single]($cyc - $ry - 4))
+    $g.DrawString('Z', $fontZzz, $bTxt, [single]($cx2 + $rx + 7), [single]($cyc - $ry - 12))
+    $bTxt.Dispose()
+  } elseif ($blinking) {
+    # 眨眼：两条横线眼 + 当前状态嘴
+    foreach ($side in -1, 1) {
+      $ex = $cx2 + $side * $eyeDX
+      $g.DrawLine($penFace, ($ex - $ew / 2), $eyeY, ($ex + $ew / 2), $eyeY)
+    }
+    $g.DrawArc($penFace, ($cx2 - 0.34 * $rx), ($cyc + 0.16 * $ry), (0.68 * $rx), (0.42 * $ry), 20, 140)
+  } else {
+    # 睁眼：白眼球 + 瞳孔（瞳孔位置按状态：running 扫视 / question 上看 / approval 瞪大）
+    $gx = 0.0; $gy = 0.0
+    $pupilR = 0.16 * $rx
+    if ($st -eq 'running') { $gx = 0.14 * $rx * [Math]::Sin($p * 0.5) }
+    if ($st -eq 'question') { $gy = -0.16 * $ry; $pupilR = 0.14 * $rx }
+    if ($st -eq 'approval') { $pupilR = 0.19 * $rx }
+    foreach ($side in -1, 1) {
+      $ex = $cx2 + $side * $eyeDX
+      $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+      $g.FillEllipse($b, ($ex - $ew / 2), ($eyeY - $eh / 2), $ew, $eh)
+      $b.Dispose()
+      $b = New-Object System.Drawing.SolidBrush($faceDark)
+      $g.FillEllipse($b, ($ex + $gx - $pupilR), ($eyeY + $gy - $pupilR), ($pupilR * 2), ($pupilR * 2))
+      $b.Dispose()
+    }
+    # 嘴（按状态）
+    switch ($st) {
+      'running' {
+        # 微笑：下半弧
+        $g.DrawArc($penFace, ($cx2 - 0.36 * $rx), ($cyc + 0.14 * $ry), (0.72 * $rx), (0.44 * $ry), 20, 140)
+      }
+      'approval' {
+        # 波浪嘴（紧张）
+        $my = $cyc + 0.36 * $ry
+        $mw = 0.62 * $rx
+        $pts = @(
+          (New-Object System.Drawing.PointF([single]($cx2 - $mw / 2), [single]$my)),
+          (New-Object System.Drawing.PointF([single]($cx2 - $mw / 6), [single]($my - 2.4))),
+          (New-Object System.Drawing.PointF([single]($cx2 + $mw / 6), [single]($my + 2.4))),
+          (New-Object System.Drawing.PointF([single]($cx2 + $mw / 2), [single]$my))
+        )
+        $g.DrawLines($penFace, $pts)
+        # 八字眉（内端上挑 = 担忧）
+        foreach ($side in -1, 1) {
+          $ex = $cx2 + $side * $eyeDX
+          $inner = $ex - $side * ($ew / 2)
+          $outer = $ex + $side * ($ew / 2)
+          $g.DrawLine($penFace, [single]$outer, [single]($eyeY - $eh / 2 - 1.5), [single]$inner, [single]($eyeY - $eh / 2 - 4.5))
+        }
+        # 汗滴
+        $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(210, 150, 205, 250))
+        $g.FillEllipse($b, [single]($cx2 + $rx * 0.72), [single]($cyc - $ry * 0.95), [single]4.5, [single]6.5)
+        $b.Dispose()
+      }
+      'question' {
+        # 歪嘴微笑（偏右）+ 左侧挑眉
+        $g.DrawArc($penFace, ($cx2 - 0.10 * $rx), ($cyc + 0.18 * $ry), (0.52 * $rx), (0.36 * $ry), 20, 140)
+        $exL = $cx2 - $eyeDX
+        $g.DrawLine($penFace, [single]($exL - $ew / 2), [single]($eyeY - $eh / 2 - 5), [single]($exL + $ew / 2), [single]($eyeY - $eh / 2 - 7))
+        # 头顶 ? 气泡（随漂浮上下动）
+        $bx = $cx2 + $rx * 0.85; $by = $cyc - $ry * 1.35
+        $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(230, $base.R, $base.G, $base.B))
+        $g.FillEllipse($b, [single]($bx - 7), [single]($by - 7), [single]14, [single]14)
+        $b.Dispose()
+        $bTxt = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+        $g.DrawString('?', $fontBubble, $bTxt, [single]($bx - 4), [single]($by - 8))
+        $bTxt.Dispose()
+      }
+    }
+  }
+  $penFace.Dispose()
+
   # 文字
-  $label = $labels[$script:state]
+  $label = $labels[$st]
   $flags = [System.Windows.Forms.TextFormatFlags]::Left -bor [System.Windows.Forms.TextFormatFlags]::VerticalCenter
   [System.Windows.Forms.TextRenderer]::DrawText($g, $label, $fontTitle,
     (New-Object System.Drawing.Rectangle(80, 20, 96, 24)),
@@ -308,10 +474,11 @@ $form.Add_Paint({
 
 $form.Add_FormClosed({
   $timer.Dispose()
+  $animTimer.Dispose()
   $tipTimer.Dispose()
   try { $tipForm.Close() } catch { }
   try { $mutex.ReleaseMutex() } catch { }
-  $mutex.Dispose()
+  try { $mutex.Dispose() } catch { }
 })
 
 [System.Windows.Forms.Application]::Run($form)

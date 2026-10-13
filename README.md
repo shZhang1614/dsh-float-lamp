@@ -15,7 +15,12 @@ A floating, always-on-top status lamp that lives **outside** the DeepSeek Harnes
 | ⚫ 暗灰「宿主离线」 | DSH 未运行 | state.json 超过 15 秒未更新，或标记 hostDown |
 
 - 多会话聚合优先级：橙 > 蓝 > 绿 > 灰；灯上显示当前状态与计数。
-- 无脉冲动画（不闪烁）。
+- **表情灯 + 动画**：灯芯上画着一张会动的脸——
+  🟢 微笑脸，上下弹性伸缩（挤压拉伸+轻微弹跳）+ 眼球扫视 + 随机眨眼；
+  🟠 紧张脸（八字眉+波浪嘴+汗滴）+ 左右发抖；
+  🔵 好奇脸（单侧挑眉+歪嘴+头顶 `?` 气泡）+ 上下漂浮；
+  ⚪ 困倦脸（闭眼+小 o 嘴+`Z z`）静止；⚫ X 眼平嘴静止。
+  动画 20fps，仅绿/橙/蓝状态运行，灰/暗灰完全静止（不闪不晃，不打扰）。
 - **悬停卡片**：鼠标移到灯上约 0.3 秒，灯左侧弹出深色卡片，逐行列出每个会话：
   `[状态] 最近一条用户消息（正在: 工具名）`；移开自动消失，拖动灯时隐藏。
 - 离线超过 60 秒灯自动退出（宿主重启后会重新拉起）。
@@ -36,8 +41,10 @@ A floating, always-on-top status lamp that lives **outside** the DeepSeek Harnes
   - `apply()` 返回清理函数（cordis fiber disposable）。⚠️ 不要在 apply 里访问
     `ctx.dispose`——Context 没有该成员，代理会抛错并使 fiber 进入错误态（所有监听被摘除）。
 - `widget/lamp.ps1`（独立灯窗）：PowerShell WinForms，置顶无边框圆角卡片（184×96），
-  400ms 轮询 state.json。左键拖动（位置记忆到 `pos.json`），右键菜单：置顶开关 / 退出。
-  互斥锁 + `lamp.pid` 保证单实例；仅在状态文本变化时重绘。
+  400ms 轮询 state.json；表情脸用 GDI+ 绘制，`animTimer` 50ms/帧仅在
+  running/approval/question 时驱动（相位角驱动挤压拉伸、抖动、漂浮、眨眼）。
+  左键拖动（位置记忆到 `pos.json`），右键菜单：置顶开关 / 退出。
+  互斥锁 + `lamp.pid` 保证单实例（环境变量 `DSH_LAMP_TAG` 可换锁名，供测试实例并存）。
 
 ## 安装 / Install
 

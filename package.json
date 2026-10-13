@@ -1,7 +1,7 @@
 {
   "name": "dsh-float-lamp",
-  "version": "0.1.0",
-  "description": "悬浮状态灯：实时显示 DSH 任务状态（绿=运行中，橙=待授权，蓝=待交互，灰=空闲），灯窗独立于 DSH 应用窗口。",
+  "version": "0.2.0",
+  "description": "悬浮表情状态灯：实时显示 DSH 任务状态（绿=运行中，橙=待授权，蓝=待交互，灰=空闲，暗灰=宿主离线），带表情脸与弹性动画，灯窗独立于 DSH 应用窗口。",
   "license": "MIT",
   "author": "shZhang1614",
   "repository": {
