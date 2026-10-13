@@ -1,7 +1,7 @@
 ﻿# dsh-float-lamp widget — 独立置顶悬浮状态灯（极简发光版，无卡片背景）。
 # 轮询 ~/.dsh/float-lamp/state.json，渲染发光圆形灯 + 文字，背景完全透明：
-#   绿 running：上下弹性伸缩（squash & stretch，底部锚定）+ 轻微弹跳
-#   橙 approval：左右紧张抖动 + 轻微压扁
+#   绿 running：灯体静止，周围光晕呼吸（忽亮忽暗 + 轻微涨缩）
+#   橙 approval：左右紧张抖动（灯体不伸缩）
 #   蓝 question：上下漂浮
 #   灰 idle：静止、半透明
 #   暗灰 offline：静止、更暗；离线持续 60 秒自动退出
@@ -307,20 +307,17 @@ $form.Add_Paint({
   # ---- 动画参数（按状态） ----
   $p = $script:phase
   $sx = 1.0; $sy = 1.0; $bobX = 0.0; $bobY = 0.0
+  $glowF = 1.0; $glowR = 0.0
   switch ($st) {
     'running' {
-      # 上下弹性伸缩：竖向拉伸 + 横向挤压（保体积），底部锚定像弹跳的小球
-      $s = [Math]::Sin($p)
-      $sy = 1 + 0.16 * $s
-      $sx = 1.0 / $sy
-      $bobY = -2.5 * [Math]::Max(0, $s)
+      # 光晕呼吸：忽亮忽暗（alpha 涨落）+ 光圈轻微涨缩，灯体保持静止
+      $gp = 0.5 + 0.5 * [Math]::Sin($p * 1.4)
+      $glowF = 0.30 + 1.05 * $gp
+      $glowR = 3.0 * $gp
     }
     'approval' {
-      # 紧张抖动：左右小幅晃动 + 轻微压扁
-      $s = [Math]::Sin($p * 1.7)
-      $sy = 1 + 0.07 * $s
-      $sx = 1.0 / $sy
-      $bobX = 2.4 * $s
+      # 紧张抖动：左右小幅晃动，灯体不伸缩
+      $bobX = 2.4 * [Math]::Sin($p * 1.7)
     }
     'question' {
       # 上下漂浮
@@ -334,10 +331,11 @@ $form.Add_Paint({
   $cyc = $cy + ($cr - $ry) + $bobY
   $cx2 = $cx + $bobX
 
-  # 光晕（随灯同步伸缩）
+  # 光晕（running 时随呼吸忽亮忽暗、轻微涨缩）
   for ($i = 3; $i -ge 1; $i--) {
-    $grx = $rx + 6 * $i; $gry = $ry + 6 * $i
-    $ga = [int](18 * $i * ($alpha / 255.0))
+    $grx = $rx + 6 * $i + $glowR; $gry = $ry + 6 * $i + $glowR
+    $ga = [int](18 * $i * ($alpha / 255.0) * $glowF)
+    if ($ga -gt 255) { $ga = 255 }
     $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb($ga, $base.R, $base.G, $base.B))
     $g.FillEllipse($b, ($cx2 - $grx), ($cyc - $gry), ($grx * 2), ($gry * 2))
     $b.Dispose()
