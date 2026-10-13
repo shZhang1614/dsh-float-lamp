@@ -96,6 +96,7 @@ $dir = if ($env:DSH_LAMP_DIR) { $env:DSH_LAMP_DIR } else { Join-Path $env:USERPR
 $stateFile = Join-Path $dir 'state.json'
 $posFile = Join-Path $dir 'pos.json'
 try { "$PID" | Set-Content (Join-Path $dir 'lamp.pid') -Encoding ASCII } catch { }
+try { [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Set-Content (Join-Path $dir 'lamp-alive') -Encoding ASCII } catch { }
 
 # ---- 用户设置（右键菜单记忆）：透明度 / 大小 / 动画 ----
 $settingsFile = Join-Path $dir 'settings.json'
@@ -253,7 +254,7 @@ $miAnim.Add_Click({
   }
   Save-Settings
 })
-$miExit.Add_Click({ $form.Close() })
+$miExit.Add_Click({ $form.Close(); [Environment]::Exit(0) })
 
 # ---- 悬停提示（自定义弹出卡片，不抢焦点） ----
 Add-Type -TypeDefinition @'
@@ -431,9 +432,15 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 400
 $script:lastRender = ''
 $script:offlineSince = $null
+$script:lastBeat = 0
 $timer.Add_Tick({
  try {
   $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  # 心跳文件：渲染循环活着才跳表；插件据此判活（进程活着但窗口没了的僵尸不再算活）
+  if ($nowMs - $script:lastBeat -ge 2000) {
+    $script:lastBeat = $nowMs
+    try { $nowMs | Set-Content (Join-Path $dir 'lamp-alive') -Encoding ASCII } catch { }
+  }
   $s = $null
   try {
     if (Test-Path $stateFile) {
@@ -496,7 +503,7 @@ $timer.Add_Tick({
   }
   if ($offline) {
     if ($null -eq $script:offlineSince) { $script:offlineSince = $nowMs }
-    elseif (($nowMs - $script:offlineSince) -gt 60000) { $form.Close(); return }
+    elseif (($nowMs - $script:offlineSince) -gt 60000) { $form.Close(); [Environment]::Exit(0); return }
   } else {
     $script:offlineSince = $null
   }
@@ -513,7 +520,9 @@ $timer.Add_Tick({
       if (-not $script:layered) { $form.Invalidate() }
     }
   }
- } catch { }
+ } catch {
+  try { (Get-Date -Format o) + ' tick-error: ' + ($_.ToString() -replace "`r?`n", ' | ') | Add-Content (Join-Path $dir 'lamp-error.log') -Encoding UTF8 } catch { }
+ }
 })
 $timer.Start()
 

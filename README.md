@@ -38,7 +38,8 @@ A floating, always-on-top status lamp that lives **outside** the DeepSeek Harnes
   - **快速路径**：同时订阅 `session/created` / `session/event` 与 `internal/dispatch`（global），
     事件到达即时更新（双投递由 seq 去重兜底）。
   - 聚合结果原子写入 `~/.dsh/float-lamp/state.json`（5 秒心跳 + 事件即时更新），
-    并自动拉起灯进程（单实例：`lamp.pid` + 子进程存活检查）。
+    并自动拉起灯进程（单实例：`lamp.pid` + `lamp-alive` 心跳探活；
+    进程存活但心跳停止视为僵尸灯，先收割进程再重拉新灯）。
   - **自禁用检测**：心跳时读取 `~/.dsh/profiles/<profile>/cordis.patch.yml`，
     若本插件被标记 `disabled: true`，立即写 hostDown 并杀掉灯（约 5 秒内熄灭）；
     重新开启则重新拉起灯。
@@ -49,7 +50,8 @@ A floating, always-on-top status lamp that lives **outside** the DeepSeek Harnes
   400ms 轮询 state.json；`animTimer` 50ms/帧仅在
   running/approval/question 且动画开启时驱动（相位角驱动光晕呼吸、抖动、漂浮）。
   左键拖动（位置记忆到 `pos.json`）/ 轻点跳宿主窗口，右键菜单：置顶 / 动画 / 透明度 / 大小 / 退出。
-  互斥锁 + `lamp.pid` 保证单实例（环境变量 `DSH_LAMP_TAG` 可换锁名，供测试实例并存）。
+  互斥锁 + `lamp.pid` + `lamp-alive` 心跳保证单实例（环境变量 `DSH_LAMP_TAG` 可换锁名，供测试实例并存）；
+  退出/离线自动退出均硬杀进程（`[Environment]::Exit(0)`），tick 异常记入 `lamp-error.log`。
 
 ## 安装 / Install
 
@@ -103,6 +105,8 @@ dsh plugin --profile desktop add github:shZhang1614/dsh-float-lamp
 | `pos.json` | 灯窗位置记忆 |
 | `settings.json` | 灯窗偏好（opacity、scale、animation） |
 | `lamp.pid` | 灯进程 pid（单实例检查） |
+| `lamp-alive` | 灯进程 2 秒心跳（插件据此判活，僵尸灯自动收割重拉） |
+| `lamp-error.log` | 灯进程 tick 异常记录（如有） |
 | `debug.log` | 插件诊断日志（加载、订阅、轮询错误、spawn） |
 
 ## 注意 / 已知坑
