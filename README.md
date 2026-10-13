@@ -54,8 +54,21 @@ dsh plugin --profile desktop add github:shZhang1614/dsh-float-lamp
 2. 在 profile 的 `~/.dsh/profiles/<profile>/package.json` 中：
    - dependencies 加 `"dsh-float-lamp": "link:<源码目录的绝对路径，正斜杠>"`
    - `dsh.profile.bundles` 数组追加 `"dsh-float-lamp"`
-3. 重启 DeepSeek Harness 应用。
+3. 创建 junction：`mklink /J "%USERPROFILE%\.dsh\profiles\<profile>\node_modules\dsh-float-lamp" "<源码目录>"`
+4. 重启 DeepSeek Harness 应用。
 </details>
+
+## 离线分发（把 zip 发给朋友）
+
+本插件**零依赖**，可完全离线安装：把发布 zip（含本仓库全部文件）发给朋友，对方只需：
+
+1. 解压到任意文件夹（如 `d:\dsh-float-lamp`）；
+2. 在该文件夹里运行 `install-offline.ps1`
+   （右键 → 使用 PowerShell 运行，或 `powershell -NoProfile -ExecutionPolicy Bypass -File install-offline.ps1`）；
+3. 完全退出并重新打开 DeepSeek Harness（托盘图标右键退出）。
+
+脚本会自动复制插件到 `~/dsh-plugins/dsh-float-lamp`、写入 profile 配置、创建 node_modules junction。
+卸载运行 `uninstall-offline.ps1` 即可。要求：Windows（自带 PowerShell 5.1+）、已安装并能启动过 DeepSeek Harness。
 
 ## 开关插件
 
