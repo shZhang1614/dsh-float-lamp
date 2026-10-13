@@ -15,7 +15,7 @@ A floating, always-on-top status lamp that lives **outside** the DeepSeek Harnes
 | ⚫ 暗灰「宿主离线」 | DSH 未运行 | state.json 超过 15 秒未更新，或标记 hostDown |
 
 - 多会话聚合优先级：橙 > 蓝 > 绿 > 灰；灯上显示当前状态与计数。
-- **极简发光 + 动画**：无卡片背景（`TransparencyKey` 全透明），只有发光圆灯（三层光晕+高光）
+- **极简发光 + 动画**：无卡片背景（`UpdateLayeredWindow` 逐像素 alpha，边缘抗锯齿无暗边），只有发光圆灯（三层光晕+高光）
   和带暗色描边的文字，任何桌面背景下都可读——
   🟢 灯体静止，周围光晕呼吸（忽亮忽暗、轻微涨缩）；
   🟠 左右紧张抖动；🔵 上下漂浮；⚪/⚫ 完全静止。

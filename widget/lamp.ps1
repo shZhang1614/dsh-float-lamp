@@ -6,13 +6,63 @@
 #   灰 idle：静止、半透明
 #   暗灰 offline：静止、更暗；离线持续 60 秒自动退出
 # 动画 50ms/帧（20fps），仅在 running/approval/question 时运行，静止状态不耗 CPU。
-# 背景用 TransparencyKey 抠除：只有灯、光晕和带描边的文字可见，无卡片方框。
+# 背景用分层窗口（UpdateLayeredWindow）每像素 alpha 抠除：只有灯、光晕和带描边的文字可见，
+# 无卡片方框；抗锯齿边缘与桌面平滑混合，无黑边、无锯齿。
 # 左键拖动移动（位置记忆），右键菜单：置顶开关 / 退出。单实例（互斥锁）。
 # 鼠标悬停：显示当前任务信息（每会话一行：状态 + 最近用户消息 + 正在执行的工具）。
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+
+# 分层窗口（per-pixel alpha）P/Invoke：边缘抗锯齿与桌面平滑混合
+Add-Type -Namespace Win32 -Name LW -MemberDefinition @'
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+public struct POINT { public int X; public int Y; }
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+public struct SIZE { public int cx; public int cy; }
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Pack = 1)]
+public struct BLENDFUNCTION { public byte BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat; }
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+public static extern bool UpdateLayeredWindow(System.IntPtr hwnd, System.IntPtr hdcDst, ref POINT ppt, ref SIZE psize, System.IntPtr hdcSrc, ref POINT pptSrc, int crKey, ref BLENDFUNCTION pblend, int dwFlags);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern int GetWindowLong(System.IntPtr hwnd, int index);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern int SetWindowLong(System.IntPtr hwnd, int index, int newStyle);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern System.IntPtr GetWindowDC(System.IntPtr hwnd);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern int ReleaseDC(System.IntPtr hwnd, System.IntPtr hdc);
+[System.Runtime.InteropServices.DllImport("gdi32.dll")]
+public static extern System.IntPtr CreateCompatibleDC(System.IntPtr hdc);
+[System.Runtime.InteropServices.DllImport("gdi32.dll")]
+public static extern bool DeleteDC(System.IntPtr hdc);
+[System.Runtime.InteropServices.DllImport("gdi32.dll")]
+public static extern System.IntPtr SelectObject(System.IntPtr hdc, System.IntPtr h);
+[System.Runtime.InteropServices.DllImport("gdi32.dll")]
+public static extern bool DeleteObject(System.IntPtr h);
+'@
+
+# 通用：把 32bpp 预乘 alpha 位图推给分层窗口
+function Push-Layered {
+  param($win, $bmp)
+  $w = $bmp.Width; $h = $bmp.Height
+  $hBmp = $bmp.GetHbitmap([System.Drawing.Color]::FromArgb(0))
+  $hdcDst = [Win32.LW]::GetWindowDC($win.Handle)
+  $hdcSrc = [Win32.LW]::CreateCompatibleDC($hdcDst)
+  $old = [Win32.LW]::SelectObject($hdcSrc, $hBmp)
+  $ppt = New-Object Win32.LW+POINT; $ppt.X = $win.Left; $ppt.Y = $win.Top
+  $pptSrc = New-Object Win32.LW+POINT
+  $psize = New-Object Win32.LW+SIZE; $psize.cx = $w; $psize.cy = $h
+  $blend = New-Object Win32.LW+BLENDFUNCTION
+  $blend.BlendOp = 0; $blend.BlendFlags = 0; $blend.SourceConstantAlpha = 255; $blend.AlphaFormat = 1
+  $ok = [Win32.LW]::UpdateLayeredWindow($win.Handle, $hdcDst, [ref]$ppt, [ref]$psize, $hdcSrc, [ref]$pptSrc, 0, [ref]$blend, 2)
+  [void][Win32.LW]::SelectObject($hdcSrc, $old)
+  [void][Win32.LW]::DeleteObject($hBmp)
+  [void][Win32.LW]::DeleteDC($hdcSrc)
+  [void][Win32.LW]::ReleaseDC($win.Handle, $hdcDst)
+  if (-not $ok) { throw ('UpdateLayeredWindow failed: ' + [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
+}
 
 $mutexName = 'dsh-float-lamp-widget'
 if ($env:DSH_LAMP_TAG) { $mutexName += "-$env:DSH_LAMP_TAG" }   # 测试实例用不同锁名，可与正式灯并存
@@ -44,16 +94,14 @@ $script:detail = ''
 $script:topMost = $true
 $script:phase = 0.0
 
-# ---- 窗体（无卡片背景：纯黑作为透明键） ----
+# ---- 窗体（无卡片背景：分层窗口 per-pixel alpha，渲染失败时回退纯黑透明键） ----
 $KEY = [System.Drawing.Color]::FromArgb(0, 0, 0)
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'dsh-float-lamp'
 $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
 $form.BackColor = $KEY
-$form.TransparencyKey = $KEY
 $form.ShowInTaskbar = $false
 $form.TopMost = $true
-$form.Opacity = 0.96
 $form.Size = New-Object System.Drawing.Size(184, 96)
 $form.Cursor = [System.Windows.Forms.Cursors]::Hand
 
@@ -98,7 +146,6 @@ $tipForm.ShowInTaskbar = $false
 $tipForm.TopMost = $true
 $tipForm.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
 $tipForm.Size = New-Object System.Drawing.Size(320, 60)
-$tipForm.Opacity = 0.98
 $tipLabel = New-Object System.Windows.Forms.Label
 $tipLabel.AutoSize = $false
 $tipLabel.BackColor = [System.Drawing.Color]::Transparent
@@ -113,10 +160,66 @@ $tipForm.Add_Paint({
   $pen2.Dispose()
 })
 $script:tipText = ''
+$script:tipLayered = $false
+
+function New-RoundedPath {
+  param($w, $h, $rr)
+  $p2 = New-Object System.Drawing.Drawing2D.GraphicsPath
+  $dd = $rr * 2
+  $p2.AddArc(0, 0, $dd, $dd, 180, 90)
+  $p2.AddArc($w - 1 - $dd, 0, $dd, $dd, 270, 90)
+  $p2.AddArc($w - 1 - $dd, $h - 1 - $dd, $dd, $dd, 0, 90)
+  $p2.AddArc(0, $h - 1 - $dd, $dd, $dd, 90, 90)
+  $p2.CloseFigure()
+  return $p2
+}
+
+# 卡片走分层窗口：圆角与文字抗锯齿、与桌面平滑混合
+function Render-Tip {
+  if (-not $script:tipLayered) { return }
+  try {
+    $w = $tipForm.Width; $h = $tipForm.Height
+    $bmp = New-Object System.Drawing.Bitmap($w, $h, [System.Drawing.Imaging.PixelFormat]::Format32bppPArgb)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+    $p2 = New-RoundedPath $w $h 10
+    $fill = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(235, 22, 26, 35))
+    $g.FillPath($fill, $p2)
+    $fill.Dispose()
+    $pen2 = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(160, 120, 130, 145), 1)
+    $g.DrawPath($pen2, $p2)
+    $pen2.Dispose()
+    $p2.Dispose()
+    $tb = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(230, 234, 242))
+    $yOff = 10
+    foreach ($ln in ($script:tipText -split "`n")) {
+      $rect = New-Object System.Drawing.RectangleF(12, $yOff, ($w - 24), 2000)
+      $g.DrawString($ln, $fontTip, $tb, $rect)
+      $szl = [System.Windows.Forms.TextRenderer]::MeasureText($ln, $fontTip,
+        (New-Object System.Drawing.Size(($w - 24), 2000)), [System.Windows.Forms.TextFormatFlags]::WordBreak)
+      $yOff += $szl.Height
+    }
+    $tb.Dispose()
+    $g.Dispose()
+    Push-Layered $tipForm $bmp
+    $bmp.Dispose()
+  } catch {
+    $script:tipLayered = $false
+    $tipLabel.Visible = $true
+    Update-TipRegion
+    $tipForm.Invalidate()
+  }
+}
+
+function Update-TipRegion {
+  $p2 = New-RoundedPath $tipForm.Width $tipForm.Height 10
+  $tipForm.Region = New-Object System.Drawing.Region($p2)
+  $p2.Dispose()
+}
 
 function Update-LampTip {
   if ($script:tipText -eq '') { $tipForm.Hide(); return }
-  $tipLabel.Text = $script:tipText
   # 逐行测量再求和：TextRenderer 对多行串会少算最后一行高度，导致末行被裁掉
   $tw = 0; $th = 0
   foreach ($ln in ($script:tipText -split "`n")) {
@@ -131,15 +234,6 @@ function Update-LampTip {
   $tipForm.Size = New-Object System.Drawing.Size($w, $h)
   $tipLabel.Location = New-Object System.Drawing.Point(12, 10)
   $tipLabel.Size = New-Object System.Drawing.Size(($w - 24), ($h - 26))
-  $p2 = New-Object System.Drawing.Drawing2D.GraphicsPath
-  $rr = 10; $dd = $rr * 2
-  $p2.AddArc(0, 0, $dd, $dd, 180, 90)
-  $p2.AddArc($w - 1 - $dd, 0, $dd, $dd, 270, 90)
-  $p2.AddArc($w - 1 - $dd, $h - 1 - $dd, $dd, $dd, 0, 90)
-  $p2.AddArc(0, $h - 1 - $dd, $dd, $dd, 90, 90)
-  $p2.CloseFigure()
-  $tipForm.Region = New-Object System.Drawing.Region($p2)
-  $p2.Dispose()
   $x = $form.Left - $w - 8
   if ($x -lt $wa.Left) { $x = $form.Right + 8 }
   if ($x -gt ($wa.Right - $w)) { $x = $wa.Right - $w }
@@ -147,8 +241,26 @@ function Update-LampTip {
   if ($y -gt ($wa.Bottom - $h)) { $y = $wa.Bottom - $h }
   if ($y -lt $wa.Top) { $y = $wa.Top }
   $tipForm.Location = New-Object System.Drawing.Point($x, $y)
-  $tipForm.Show($form)
-  $tipForm.Invalidate()
+  if (-not $tipForm.Visible) { $tipForm.Show($form) }
+  if (-not $script:tipLayered) {
+    try {
+      $ex = [Win32.LW]::GetWindowLong($tipForm.Handle, -20)
+      [void][Win32.LW]::SetWindowLong($tipForm.Handle, -20, ($ex -bor 0x80000))
+      $script:tipLayered = $true
+      $tipLabel.Text = $script:tipText
+      $tipLabel.Visible = $false
+    } catch {
+      $script:tipLayered = $false
+      $tipLabel.Text = $script:tipText
+      $tipLabel.Visible = $true
+      Update-TipRegion
+    }
+  } else {
+    $tipLabel.Text = $script:tipText
+    $tipLabel.Visible = $false
+  }
+  Render-Tip
+  if (-not $script:tipLayered) { $tipForm.Invalidate() }
 }
 $tipTimer = New-Object System.Windows.Forms.Timer
 $tipTimer.Interval = 300
@@ -192,6 +304,7 @@ $timer.Interval = 400
 $script:lastRender = ''
 $script:offlineSince = $null
 $timer.Add_Tick({
+ try {
   $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   $s = $null
   try {
@@ -207,7 +320,9 @@ $timer.Add_Tick({
     $newTip = '无法连接 DeepSeek Harness 宿主'
     $offline = $true
   } else {
-    if (($nowMs - [double]$s.updatedAt) -gt 15000) {
+    $ts = 0.0
+    if (-not [double]::TryParse([string]$s.updatedAt, [ref]$ts)) { $ts = 0 }
+    if (($nowMs - $ts) -gt 15000) {
       $script:state = 'offline'
       $script:detail = ''
       $newTip = '无法连接 DeepSeek Harness 宿主'
@@ -257,9 +372,11 @@ $timer.Add_Tick({
     $key = "$($script:state)|$($script:detail)"
     if ($key -ne $script:lastRender) {
       $script:lastRender = $key
-      $form.Invalidate()
+      Render-Lamp
+      if (-not $script:layered) { $form.Invalidate() }
     }
   }
+ } catch { }
 })
 $timer.Start()
 
@@ -268,7 +385,7 @@ $animTimer = New-Object System.Windows.Forms.Timer
 $animTimer.Interval = 50
 $animTimer.Add_Tick({
   $script:phase += 0.28
-  $form.Invalidate()
+  if ($script:layered) { Render-Lamp } else { $form.Invalidate() }
 })
 
 # ---- 绘制 ----
@@ -293,10 +410,12 @@ function Draw-OutlinedText {
   $b.Dispose()
 }
 
-$form.Add_Paint({
-  $g = $args[1].Graphics
+function Draw-LampContent {
+  param($g)
   $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-  $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
+  $g.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::GammaCorrected
+  $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+  $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
 
   $st = $script:state
   $base = $colors[$st]
@@ -331,10 +450,12 @@ $form.Add_Paint({
   $cyc = $cy + ($cr - $ry) + $bobY
   $cx2 = $cx + $bobX
 
-  # 光晕（running 时随呼吸忽亮忽暗、轻微涨缩）
-  for ($i = 3; $i -ge 1; $i--) {
-    $grx = $rx + 6 * $i + $glowR; $gry = $ry + 6 * $i + $glowR
-    $ga = [int](18 * $i * ($alpha / 255.0) * $glowF)
+  # 光晕：10 层平滑衰减（alpha 按二次方从内到外递减），running 时随呼吸忽亮忽暗
+  for ($i = 10; $i -ge 1; $i--) {
+    $t = $i / 10.0
+    $grx = $rx + 18 * $t + $glowR; $gry = $ry + 18 * $t + $glowR
+    $ga = [int](54 * (1 - $t) * (1 - $t) * ($alpha / 255.0) * $glowF)
+    if ($ga -le 0) { continue }
     if ($ga -gt 255) { $ga = 255 }
     $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb($ga, $base.R, $base.G, $base.B))
     $g.FillEllipse($b, ($cx2 - $grx), ($cyc - $gry), ($grx * 2), ($gry * 2))
@@ -354,6 +475,43 @@ $form.Add_Paint({
   if ($script:detail -ne '') {
     Draw-OutlinedText $g $script:detail $fontSmall ([single]80) ([single]50) $grayText
   }
+}
+
+# 回退路径：ULW 不可用时走传统 WM_PAINT + 纯黑透明键
+$form.Add_Paint({
+  if (-not $script:layered) {
+    if ($form.TransparencyKey -ne $KEY) { $form.TransparencyKey = $KEY }
+    Draw-LampContent $args[1].Graphics
+  }
+})
+
+# ---- 分层窗口渲染：32bpp 预乘 alpha 位图 → UpdateLayeredWindow，边缘与桌面平滑混合 ----
+$script:layered = $false
+function Render-Lamp {
+  if (-not $script:layered) { return }
+  try {
+    $w = $form.Width; $h = $form.Height
+    $bmp = New-Object System.Drawing.Bitmap($w, $h, [System.Drawing.Imaging.PixelFormat]::Format32bppPArgb)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    Draw-LampContent $g
+    $g.Dispose()
+    Push-Layered $form $bmp
+    $bmp.Dispose()
+  } catch {
+    # 降级：回到透明键模式（旧渲染路径）
+    $script:layered = $false
+    $form.TransparencyKey = $KEY
+    $form.Invalidate()
+  }
+}
+
+$form.Add_Shown({
+  try {
+    $ex = [Win32.LW]::GetWindowLong($form.Handle, -20)   # GWL_EXSTYLE
+    [void][Win32.LW]::SetWindowLong($form.Handle, -20, ($ex -bor 0x80000))  # WS_EX_LAYERED
+    $script:layered = $true
+  } catch { $script:layered = $false }
+  Render-Lamp
 })
 
 $form.Add_FormClosed({
