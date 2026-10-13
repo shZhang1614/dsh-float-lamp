@@ -1,6 +1,6 @@
 {
   "name": "dsh-float-lamp",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "悬浮发光状态灯：实时显示 DSH 任务状态（绿=运行中，橙=待授权，蓝=待交互，灰=空闲，暗灰=宿主离线），全透明背景+呼吸光晕动画，灯窗独立于 DSH 应用窗口。",
   "license": "MIT",
   "author": "shZhang1614",

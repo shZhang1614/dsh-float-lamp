@@ -512,10 +512,11 @@ $timer.Add_Tick({
     if (-not $animTimer.Enabled) { $animTimer.Start() }
   } else {
     if ($animTimer.Enabled) { $animTimer.Stop() }
-    # 静止状态：只在显示内容变化时重绘（避免每 tick 重绘导致闪烁）
+    # 静止状态：内容变化时重绘；另每 4s 强制重推一帧（自愈：万一某次 ULW 推送被 DWM 丢弃，4s 内恢复）
     $key = "$($script:state)|$($script:detail)|$($script:animOn)"
-    if ($key -ne $script:lastRender) {
+    if ($key -ne $script:lastRender -or ($nowMs - [double]$script:lastStaticPush) -ge 4000) {
       $script:lastRender = $key
+      $script:lastStaticPush = $nowMs
       Render-Lamp
       if (-not $script:layered) { $form.Invalidate() }
     }
@@ -660,8 +661,10 @@ function Render-Lamp {
     Push-Layered $form $bmp
     $bmp.Dispose()
   } catch {
-    # 降级：回到透明键模式（旧渲染路径）
+    # 降级：回到透明键模式（旧渲染路径）；先摘掉 WS_EX_LAYERED，否则窗口停在最后一帧 ULW 画面
+    try { (Get-Date -Format o) + ' render-error: ' + ($_.ToString() -replace "`r?`n", ' | ') | Add-Content (Join-Path $dir 'lamp-error.log') -Encoding UTF8 } catch { }
     $script:layered = $false
+    try { $ex = [Win32.LW]::GetWindowLong($form.Handle, -20); [void][Win32.LW]::SetWindowLong($form.Handle, -20, ($ex -band (-bnot 0x80000))) } catch { }
     $form.TransparencyKey = $KEY
     $form.Invalidate()
   }
