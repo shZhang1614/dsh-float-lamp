@@ -430,7 +430,7 @@ function Draw-LampContent {
   switch ($st) {
     'running' {
       # 光晕呼吸：忽亮忽暗（alpha 涨落）+ 光圈轻微涨缩，灯体保持静止
-      $gp = 0.5 + 0.5 * [Math]::Sin($p * 1.4)
+      $gp = 0.5 + 0.5 * [Math]::Sin($p * 0.9)
       $glowF = 0.30 + 1.05 * $gp
       $glowR = 3.0 * $gp
     }
