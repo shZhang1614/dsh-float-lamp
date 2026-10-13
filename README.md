@@ -2,6 +2,8 @@
 
 悬浮任务状态灯：独立于 DeepSeek Harness 窗口的置顶小灯，实时显示任务状态；鼠标悬停显示正在运行的任务信息。
 
+A floating, always-on-top status lamp that lives **outside** the DeepSeek Harness window: 🟢 running, 🟠 needs approval, 🔵 needs your input, ⚪ idle, dark-grey host offline. Hover the lamp to list running tasks. Windows only (PowerShell WinForms).
+
 ## 灯色含义
 
 | 灯色 | 含义 | 判定 |
@@ -37,14 +39,23 @@
   400ms 轮询 state.json。左键拖动（位置记忆到 `pos.json`），右键菜单：置顶开关 / 退出。
   互斥锁 + `lamp.pid` 保证单实例；仅在状态文本变化时重绘。
 
-## 安装（当前机器已完成）
+## 安装 / Install
 
-1. 源码在 `C:\Users\16142\dsh-plugins\dsh-float-lamp`。
-2. desktop profile（`~/.dsh/profiles/desktop/package.json`）已加：
-   - dependency `"dsh-float-lamp": "link:C:/Users/16142/dsh-plugins/dsh-float-lamp"`
-   - bundles 追加 `"dsh-float-lamp"`
-3. `~/.dsh/profiles/desktop/node_modules/dsh-float-lamp` 是指向源码目录的 **junction**，
-   改源码即生效，无需复制同步；但**修改代码后需重启 DeepSeek Harness 应用**才会重新加载。
+```sh
+dsh plugin --profile desktop add github:shZhang1614/dsh-float-lamp
+```
+
+然后重启 DeepSeek Harness 应用；插件加载后会自动拉起灯窗（无需手动运行任何脚本）。
+
+<details>
+<summary>手动安装（不经过 dsh plugin 命令）</summary>
+
+1. 把源码放到任意目录，例如 `~/dsh-plugins/dsh-float-lamp`。
+2. 在 profile 的 `~/.dsh/profiles/<profile>/package.json` 中：
+   - dependencies 加 `"dsh-float-lamp": "link:<源码目录的绝对路径，正斜杠>"`
+   - `dsh.profile.bundles` 数组追加 `"dsh-float-lamp"`
+3. 重启 DeepSeek Harness 应用。
+</details>
 
 ## 开关插件
 
@@ -85,5 +96,5 @@
 
 ## 测试
 
-- `node test/fold-test.mjs` — 状态机 13 项断言（四态、优先级、多会话、重放播种）。
+- `node test/fold-test.mjs` — 状态机 17 项断言（四态、优先级、多会话、重放播种、harness 噪音过滤）。
 - 假 ctx 冒烟：apply 返回清理函数、poll 折叠事件、cleanup 写 hostDown。

@@ -3,6 +3,15 @@
   "version": "0.1.0",
   "description": "悬浮状态灯：实时显示 DSH 任务状态（绿=运行中，橙=待授权，蓝=待交互，灰=空闲），灯窗独立于 DSH 应用窗口。",
   "license": "MIT",
+  "author": "shZhang1614",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shZhang1614/dsh-float-lamp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shZhang1614/dsh-float-lamp/issues"
+  },
+  "homepage": "https://github.com/shZhang1614/dsh-float-lamp",
   "keywords": [
     "dsh-plugin",
     "dsh",
