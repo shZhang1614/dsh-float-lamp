@@ -1,0 +1,4 @@
+# dsh-float-lamp bundle patch: insert one plain loader entry for this plugin.
+- insert:
+    - id: dsh-float-lamp
+      name: 'dsh-float-lamp'

@@ -1,0 +1,36 @@
+{
+  "name": "dsh-float-lamp",
+  "version": "0.1.0",
+  "description": "悬浮状态灯：实时显示 DSH 任务状态（绿=运行中，橙=待授权，蓝=待交互，灰=空闲），灯窗独立于 DSH 应用窗口。",
+  "license": "MIT",
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "deepseek-harness",
+    "status-lamp",
+    "float-window"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "lib",
+    "widget",
+    "cordis.patch.yml",
+    "screenshots.json",
+    "screenshots",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
